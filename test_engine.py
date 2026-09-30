@@ -1,105 +1,239 @@
-"""
-HP Smart Local Privacy Guard - Deterministic Engine Test Suite
-Powered by Snapdragon Hexagon NPU
+"""HP Smart Local Privacy Guard - Deterministic Engine Test Suite.
 
-Runs unit & integration tests verifying state transitions (USER_AWAY -> USER_SECURE -> PEEKER_DETECTED),
-face filtering, multi-frame debouncing, hysteresis cooldown, and telemetry reporting.
-Can be run offline without a live webcam.
+Runs automated unit and integration tests for state machine debouncing,
+hysteresis cooldown, relative peeker threshold filtering, face tracking,
+owner enrollment unknown user detection, and robust engine exception handling.
+
+Can be run directly or via pytest:
+    python test_engine.py
+    pytest -q test_engine.py
 """
 
-import sys
-import os
 import io
+import os
+import sys
 import time
-import numpy as np
-import cv2
+from typing import List, Optional
 
-# Add workspace directory to path
+import cv2
+import numpy as np
+
+# Ensure local workspace import
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Ensure UTF-8 output encoding for Windows terminal
-if sys.platform == "win32" and hasattr(sys.stdout, 'buffer'):
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+from privacy_engine import (
+    PrivacyGuardEngine,
+    PrivacyStatus,
+    FaceBox,
+    EngineConfig,
+    FaceDetectorBackend,
+    EngineResult,
+)
 
-from privacy_engine import PrivacyEngine
 
-def draw_synthetic_face(img, center_x, center_y, size=80):
-    """Draws a simplified synthetic face on an image for offline testing."""
-    color_skin = (180, 210, 230)
-    color_eye = (40, 40, 40)
-    
-    # Face ellipse
-    cv2.ellipse(img, (center_x, center_y), (size // 2, int(size * 0.7)), 0, 0, 360, color_skin, -1)
-    # Eyes
-    cv2.circle(img, (center_x - size // 4, center_y - size // 4), 6, color_eye, -1)
-    cv2.circle(img, (center_x + size // 4, center_y - size // 4), 6, color_eye, -1)
-    # Mouth
-    cv2.ellipse(img, (center_x, center_y + size // 4), (size // 4, size // 8), 0, 0, 180, color_eye, 3)
+class ScriptedBackend(FaceDetectorBackend):
+    """Scripted mock backend returning pre-determined sequences of FaceBox lists."""
 
-def create_test_images():
-    """Generates synthetic test images for 0, 1, and 2 faces."""
-    h, w = 480, 640
-    
-    # 1. Blank image (0 faces)
-    img_away = np.zeros((h, w, 3), dtype=np.uint8) + 40
-    
-    # 2. Single face image (1 face)
-    img_secure = img_away.copy()
-    draw_synthetic_face(img_secure, 320, 240, size=120)
-    
-    # 3. Two face image (Primary + Peeker)
-    img_peeker = img_secure.copy()
-    draw_synthetic_face(img_peeker, 520, 200, size=90)
-    
-    return img_away, img_secure, img_peeker
+    def __init__(self, scripted_frames: List[List[FaceBox]], backend_name: str = "Scripted Mock Backend") -> None:
+        self.scripted_frames = scripted_frames
+        self._name = backend_name
+        self.frame_index = 0
 
-def test_engine_state_machine():
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def detect(self, rgb_frame: np.ndarray, config: EngineConfig) -> List[FaceBox]:
+        if not self.scripted_frames:
+            return []
+        boxes = self.scripted_frames[self.frame_index % len(self.scripted_frames)]
+        self.frame_index += 1
+        # Return copies of FaceBox objects
+        return [FaceBox(x=b.x, y=b.y, w=b.w, h=b.h, confidence=b.confidence) for b in boxes]
+
+
+class ErrorBackend(FaceDetectorBackend):
+    """Mock backend that intentionally raises an exception during detection."""
+
+    @property
+    def name(self) -> str:
+        return "Error Simulation Backend"
+
+    def detect(self, rgb_frame: np.ndarray, config: EngineConfig) -> List[FaceBox]:
+        raise RuntimeError("Simulated Hardware Detection Failure")
+
+
+def create_dummy_frame(h: int = 480, w: int = 640) -> np.ndarray:
+    return np.zeros((h, w, 3), dtype=np.uint8) + 50
+
+
+# ==============================================================================
+# Unit Test Cases
+# ==============================================================================
+
+def test_state_machine_debouncing() -> None:
+    """Verifies multi-frame debouncing prevents single-frame false alarms."""
+    # 2 frames of peeker, then 1 face
+    frame_sequence = [
+        [FaceBox(100, 100, 100, 100, 0.9), FaceBox(400, 100, 100, 100, 0.85)],  # Frame 1
+        [FaceBox(100, 100, 100, 100, 0.9), FaceBox(400, 100, 100, 100, 0.85)],  # Frame 2
+        [FaceBox(100, 100, 100, 100, 0.9), FaceBox(400, 100, 100, 100, 0.85)],  # Frame 3
+    ]
+    scripted = ScriptedBackend(frame_sequence)
+    engine = PrivacyGuardEngine(debounce_frames=3, release_delay_sec=1.0, backend=scripted)
+
+    dummy = create_dummy_frame()
+
+    # Frame 1: Raw status PEEKER_DETECTED, but debounced stable_status is NO_USER
+    res1 = engine.process_frame(dummy)
+    assert res1.status == PrivacyStatus.PEEKER_DETECTED
+    assert res1.stable_status == PrivacyStatus.NO_USER
+
+    # Frame 2: Still debouncing
+    res2 = engine.process_frame(dummy)
+    assert res2.status == PrivacyStatus.PEEKER_DETECTED
+    assert res2.stable_status == PrivacyStatus.NO_USER
+
+    # Frame 3: 3 consecutive peeker frames -> stable_status becomes PEEKER_DETECTED
+    res3 = engine.process_frame(dummy)
+    assert res3.status == PrivacyStatus.PEEKER_DETECTED
+    assert res3.stable_status == PrivacyStatus.PEEKER_DETECTED
+
+
+def test_hysteresis_release_cooldown() -> None:
+    """Verifies hysteresis cooldown maintains shield during transient peeker disappearance."""
+    # 3 peeker frames to trigger, then 1 face frame
+    peeker_boxes = [FaceBox(100, 100, 100, 100, 0.9), FaceBox(400, 100, 100, 100, 0.85)]
+    single_box = [FaceBox(100, 100, 100, 100, 0.9)]
+
+    sequence = [peeker_boxes, peeker_boxes, peeker_boxes, single_box]
+    scripted = ScriptedBackend(sequence)
+
+    # Set hysteresis to 10.0 seconds so release delay is long
+    engine = PrivacyGuardEngine(debounce_frames=3, release_delay_sec=10.0, backend=scripted)
+    dummy = create_dummy_frame()
+
+    for _ in range(3):
+        engine.process_frame(dummy)
+
+    assert engine.stable_status == PrivacyStatus.PEEKER_DETECTED
+
+    # Frame 4 has single face, but hysteresis cooldown keeps stable status as PEEKER_DETECTED
+    res4 = engine.process_frame(dummy)
+    assert res4.status == PrivacyStatus.SECURE
+    assert res4.stable_status == PrivacyStatus.PEEKER_DETECTED
+
+
+def test_relative_peeker_size_filter() -> None:
+    """Verifies non-primary faces below peeker_relative_size_ratio are ignored as background noise."""
+    primary_user = FaceBox(x=200, y=100, w=200, h=200, confidence=0.95)  # Area = 40,000
+    tiny_noise = FaceBox(x=500, y=50, w=30, h=30, confidence=0.80)       # Area = 900 (< 15% of 40,000 = 6,000)
+    real_peeker = FaceBox(x=450, y=100, w=150, h=150, confidence=0.85)    # Area = 22,500 (>= 15%)
+
+    # Test 1: Primary + Tiny Noise -> Should be filtered to 1 face (SECURE)
+    scripted_noise = ScriptedBackend([[primary_user, tiny_noise]])
+    engine_noise = PrivacyGuardEngine(
+        debounce_frames=1, peeker_relative_size_ratio=0.15, backend=scripted_noise
+    )
+    res_noise = engine_noise.process_frame(create_dummy_frame())
+    assert res_noise.face_count == 1
+    assert res_noise.status == PrivacyStatus.SECURE
+
+    # Test 2: Primary + Real Peeker -> Should count both faces (PEEKER_DETECTED)
+    scripted_peeker = ScriptedBackend([[primary_user, real_peeker]])
+    engine_peeker = PrivacyGuardEngine(
+        debounce_frames=1, peeker_relative_size_ratio=0.15, backend=scripted_peeker
+    )
+    res_peeker = engine_peeker.process_frame(create_dummy_frame())
+    assert res_peeker.face_count == 2
+    assert res_peeker.status == PrivacyStatus.PEEKER_DETECTED
+
+
+def test_owner_enrollment_and_unknown_user() -> None:
+    """Verifies owner enrollment triggers UNKNOWN_USER for unrecognized faces."""
+    single_face = FaceBox(x=100, y=100, w=100, h=100, confidence=0.90)
+    scripted = ScriptedBackend([[single_face]])
+    engine = PrivacyGuardEngine(debounce_frames=1, backend=scripted)
+
+    frame_owner = np.zeros((480, 640, 3), dtype=np.uint8)
+    frame_owner[100:200, 100:200] = (0, 200, 0)  # Green owner face
+
+    # Enroll owner
+    assert engine.enroll_owner(frame_owner, single_face) is True
+
+    # Same frame -> SECURE
+    res_owner = engine.process_frame(frame_owner)
+    assert res_owner.status == PrivacyStatus.SECURE
+
+    # Unrecognized blue face frame -> UNKNOWN_USER
+    frame_stranger = np.zeros((480, 640, 3), dtype=np.uint8)
+    frame_stranger[100:200, 100:200] = (200, 0, 0)  # Blue stranger face
+    res_stranger = engine.process_frame(frame_stranger)
+    assert res_stranger.status == PrivacyStatus.UNKNOWN_USER
+
+
+def test_engine_error_handling() -> None:
+    """Verifies exceptions during detection return ENGINE_ERROR status without crashing app."""
+    err_backend = ErrorBackend()
+    engine = PrivacyGuardEngine(backend=err_backend)
+
+    res = engine.process_frame(create_dummy_frame())
+    assert res.status == PrivacyStatus.ENGINE_ERROR
+    assert res.stable_status == PrivacyStatus.ENGINE_ERROR
+
+
+def test_update_config() -> None:
+    """Verifies engine.update_config dynamic updates."""
+    scripted = ScriptedBackend([[FaceBox(100, 100, 100, 100, 0.9)]])
+    engine = PrivacyGuardEngine(debounce_frames=2, backend=scripted)
+
+    new_cfg = EngineConfig(debounce_frames=5, min_detection_confidence=0.7)
+    engine.update_config(new_cfg)
+
+    assert engine.config.debounce_frames == 5
+    assert engine.config.min_detection_confidence == 0.7
+
+
+# ==============================================================================
+# Direct Command-Line Test Suite Harness
+# ==============================================================================
+
+def run_all_tests() -> None:
+    if sys.platform == "win32" and hasattr(sys.stdout, "buffer"):
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+
     print("==========================================================")
-    print("  HP Smart Local Privacy Guard - Engine Test Suite")
+    print("  HP Smart Local Privacy Guard - Deterministic Test Suite")
     print("==========================================================")
-    
-    engine = PrivacyEngine(min_confidence=0.3, min_face_size=0.01, debounce_frames=3, hysteresis_sec=0.5)
-    print(f"[+] Active Inference Backend: {engine.backend_name}")
-    print(f"[+] NPU Acceleration: {engine.is_npu}")
-    
-    img_away, img_secure, img_peeker = create_test_images()
-    
-    # Test 1: USER_AWAY detection
-    print("\n--- Test 1: Testing USER_AWAY (0 faces) ---")
-    res_away = engine.process_frame(img_away)
-    print(f"    Raw Status: {res_away['raw_status']} | Debounced: {res_away['status']} | Latency: {res_away['latency_ms']} ms")
-    assert res_away['status'] == PrivacyEngine.STATUS_AWAY, "Failed: Should be USER_AWAY"
-    print("    ✅ Test 1 PASSED!")
-    
-    # Test 2: Multi-frame Debouncing to PEEKER_DETECTED
-    print("\n--- Test 2: Testing Multi-frame Debouncing (2 faces) ---")
-    print("    Feeding frame 1 with peeker...")
-    res1 = engine.process_frame(img_peeker)
-    print(f"    Frame 1 -> Raw: {res1['raw_status']}, Debounced: {res1['status']}")
-    
-    print("    Feeding frame 2 with peeker...")
-    res2 = engine.process_frame(img_peeker)
-    print(f"    Frame 2 -> Raw: {res2['raw_status']}, Debounced: {res2['status']}")
-    
-    print("    Feeding frame 3 with peeker...")
-    res3 = engine.process_frame(img_peeker)
-    print(f"    Frame 3 -> Raw: {res3['raw_status']}, Debounced: {res3['status']}")
-    
-    # Notice: if MediaPipe face detector detects 2 faces in synthetic image or mock state
-    print(f"    Detected Face Count: {res3['face_count']} | Peeker Count: {res3['peeker_count']}")
-    print("    ✅ Debouncing logic verified!")
-    
-    # Test 3: Telemetry output fields
-    print("\n--- Test 3: Telemetry Output Inspection ---")
-    print(f"    Latency: {res3['latency_ms']} ms")
-    print(f"    CPU Usage: {res3['cpu_usage']} %")
-    print(f"    Power Estimate: {res3['power_estimate']}")
-    assert 'latency_ms' in res3 and 'cpu_usage' in res3 and 'backend_name' in res3
-    print("    ✅ Test 3 PASSED!")
 
-    print("\n==========================================================")
-    print("  🎉 ALL ENGINE TESTS PASSED SUCCESSFULLY!")
+    print("[1/6] Running test_state_machine_debouncing...")
+    test_state_machine_debouncing()
+    print("      ✅ PASSED!")
+
+    print("[2/6] Running test_hysteresis_release_cooldown...")
+    test_hysteresis_release_cooldown()
+    print("      ✅ PASSED!")
+
+    print("[3/6] Running test_relative_peeker_size_filter...")
+    test_relative_peeker_size_filter()
+    print("      ✅ PASSED!")
+
+    print("[4/6] Running test_owner_enrollment_and_unknown_user...")
+    test_owner_enrollment_and_unknown_user()
+    print("      ✅ PASSED!")
+
+    print("[5/6] Running test_engine_error_handling...")
+    test_engine_error_handling()
+    print("      ✅ PASSED!")
+
+    print("[6/6] Running test_update_config...")
+    test_update_config()
+    print("      ✅ PASSED!")
+
     print("==========================================================")
+    print("  🎉 ALL 6 DETERMINISTIC UNIT TESTS PASSED SUCCESSFULLY!")
+    print("==========================================================")
+
 
 if __name__ == "__main__":
-    test_engine_state_machine()
+    run_all_tests()

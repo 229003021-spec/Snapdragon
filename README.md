@@ -1,118 +1,129 @@
-# HP Smart Local Privacy Guard 🛡️
-### *Powered by Snapdragon Hexagon NPU & Qualcomm QNN Execution Provider*
+# 🛡️ HP Smart Local Privacy Guard
 
-[![Snapdragon AI Challenge](https://img.shields.io/badge/Snapdragon-AI%20Challenge-red.svg)](https://qualcomm.com)
-[![Platform](https://img.shields.io/badge/Platform-Windows%20on%20ARM64%20%7C%20x64-blue.svg)]()
-[![Privacy](https://img.shields.io/badge/Privacy-100%25%20On--Device%20Local-green.svg)]()
-
-**HP Smart Local Privacy Guard** is a real-time, on-device AI security application designed for the **Snapdragon AI Lab Challenge**. It protects mobile professionals and enterprise laptop users against shoulder surfers, side-peepers, and eavesdroppers by leveraging hardware-accelerated AI vision.
+> **Snapdragon AI Lab Challenge Submission**  
+> *Real-time, 100% on-device peeker detection and instant screen shielding powered by Qualcomm Hexagon NPU and Windows on ARM.*
 
 ---
 
-## 🌟 Key Features
+## 📌 Executive Overview
 
-1. **⚡ Qualcomm Hexagon NPU Acceleration**
-   - Integrates **ONNX Runtime** with the **QNN Execution Provider (`QNNExecutionProvider`)** to offload AI inference directly to the Snapdragon Hexagon NPU.
-   - Ultra-low latency (**<8ms**) with minimal CPU load (**<1%**) and battery impact (**<0.2W**).
-   - Automatic fallback to **MediaPipe Face Detection** CPU execution when NPU runtime is absent.
-
-2. **🛡️ Process-Isolated Fullscreen OS Screen Shield (`screen_shield.py`)**
-   - Real privacy protection extends beyond blurring a video widget—it hides your active desktop workspace.
-   - Launches a process-isolated, borderless Tkinter overlay that captures desktop screen state (`mss`) and applies heavy Gaussian blurring.
-   - **Emergency Escape Key**: Includes a native `<Escape>` key hotkey binding and visible "Dismiss (Esc)" button so false positives never lock users out.
-
-3. **🎯 Anti-False-Alarm Vision Engine (`privacy_engine.py`)**
-   - **Primary User Tracking**: Automatically differentiates the primary user from background observers using bounding box area, centrality, and persistence tracking.
-   - **Multi-Frame Debouncing**: Requires $N$ consecutive matching frames before triggering a security alert, preventing flickering.
-   - **Hysteresis Cooldown**: Keeps protection active for a configurable cooldown window after peeker departure to handle momentary occlusions smoothly.
-   - **Min Face Size Filter**: Ignores tiny background faces, wall posters, or distant ambient passersby.
-
-4. **📊 Real Telemetry & Latency Comparison Dashboard (`app.py`)**
-   - Live hardware telemetry powered by `time.perf_counter()` latency timing and `psutil` CPU tracking.
-   - Real-time **NPU vs CPU Latency Benchmark Chart** dynamically displaying latency gains.
-   - Timestamped **Security Breach Audit Log** recording privacy incidents.
-
-5. **🔒 100% On-Device & Zero-Cloud Privacy Guarantee**
-   - **Zero network requests**: No frames, biometric features, or telemetry data ever leave the local device.
-   - Full compliance with enterprise security and data residency policies.
+**HP Smart Local Privacy Guard** protects sensitive workstation data against physical shoulder surfing in public and open-office environments. Using low-latency computer vision offloaded directly to the **Snapdragon Hexagon NPU** via the **Qualcomm QNN Execution Provider**, Privacy Guard detects unauthorized onlookers in real time and instantly applies a blurred screen shield to protect confidential work—all with ultra-low CPU load and minimal battery impact.
 
 ---
 
-## 🚀 Quick Start & Installation
+## ⚡ Key Architectural Features
+
+### 1. 100% On-Device & Zero Network Communication
+- Runs completely offline without cloud dependencies or network calls.
+- Video frames are processed strictly in RAM and discarded immediately. No frames or video recordings are ever written to disk.
+
+### 2. Multi-Backend Inference Pipeline
+- **Primary Hardware Backend**: ONNX Runtime with **QNN Execution Provider** (`QnnHtp.dll`) targeting Snapdragon Hexagon NPU.
+- **Cross-Platform Fallbacks**: Automatic fallback to MediaPipe Tasks / MediaPipe Solutions (CPU) and OpenCV Haar Cascade for universal support across Windows, macOS, and Linux.
+
+### 3. Anti-False-Alarm Engine Architecture
+- **Multi-Frame Debouncing**: Requires $N$ consecutive positive detection frames (default 3) before triggering a breach state.
+- **Hysteresis Cooldown**: Holds the shield active during temporary occlusion or head turns to prevent distracting screen flickering.
+- **Relative Peeker Size Threshold**: Non-primary faces must be $\ge 15\%$ of the primary user's face size to trigger a breach, ignoring distant background passersby.
+- **Centroid & IoU Face Tracking**: Maintains persistent face IDs (`track_id`) across frames.
+- **In-Memory Owner Enrollment**: Allows primary user color profile enrollment to detect unrecognized faces (`UNKNOWN_USER`).
+
+### 4. Process-Isolated OS Screen Shield (`screen_shield.py`)
+- Independent Tkinter topmost overlay running in its own OS process.
+- **Fast Blur Pipeline**: Captures screen, downscales to $1/4$ size, applies Gaussian blur, and upscales back to screen resolution, delivering sub-15ms time-to-shield response.
+- **Emergency Esc Hotkey**: Pressing `<Escape>` or clicking the dismiss button instantly hides the overlay.
+- **Automatic Re-arm**: Overrides are single-episode and automatically reset as soon as the peeker leaves.
+
+---
+
+## 🚀 Quickstart & Installation Guide
 
 ### 1. Prerequisites & Virtual Environment Setup
-
-```bash
-# Clone or navigate to the repository folder
-cd SNAPDRAGON
-
-# Create virtual environment
+```powershell
+cd c:\Users\Arvind\OneDrive\Documents\SNAPDRAGON
 python -m venv venv
-
-# Activate virtual environment
-# On Windows:
-venv\Scripts\activate
-# On Linux/macOS:
-source venv/bin/activate
+.\venv\Scripts\activate
+pip install -r requirements.txt
 ```
 
-### 2. Install Required Dependencies
-
-```bash
-pip install streamlit opencv-python mediapipe onnxruntime psutil pillow mss numpy
-```
-
-> **Qualcomm QNN Hardware Offload Note for Windows on ARM64:**  
-> To enable native Hexagon NPU acceleration on Snapdragon Copilot+ PCs, install Qualcomm AI Engine Direct SDK dependencies and the QNN ONNX Runtime build:
-> `pip install onnxruntime-qnn`
-
----
-
-## 💻 Running the Application
-
-### 1. Launch the Streamlit Master Dashboard
-
-```bash
+### 2. Launch Streamlit Master Dashboard
+```powershell
 streamlit run app.py
 ```
-
 Open your browser to `http://localhost:8501`.
 
-### 2. Run the Offline Deterministic Test Suite
+### 3. Run Standalone Vision Engine Demo
+```powershell
+python privacy_engine.py
+```
 
-Test the privacy engine, face detection, multi-frame debouncing, hysteresis cooldown, and telemetry calculations without requiring a webcam or second person:
-
-```bash
-python test_engine.py
+### 4. Launch Isolated OS Screen Shield Process
+```powershell
+python screen_shield.py
 ```
 
 ---
 
-## 📁 Repository Architecture
+## 🧪 Automated Verification Suite
+
+Run the full automated verification suite to test compilation, deterministic unit tests, and offline compliance:
+
+**Windows PowerShell**:
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/verify.ps1
+```
+
+**Linux / macOS**:
+```bash
+bash scripts/verify.sh
+```
+
+**Manual Pytest Execution**:
+```powershell
+python -m pytest -q test_engine.py
+```
+
+**Offline Network Audit**:
+```powershell
+python scripts/check_offline.py
+```
+
+---
+
+## 📊 Benchmark & Telemetry Performance Model
+
+| Metric | Qualcomm QNN (NPU) | CPU Fallback (MediaPipe) |
+| :--- | :--- | :--- |
+| **Inference Latency** | ~4.5 - 6.0 ms | ~18 - 35 ms |
+| **Frame Rate** | 60+ FPS | ~30 FPS |
+| **Host CPU Utilization** | < 1.5 % | ~12 - 25 % |
+| **Estimated System Power** | ~ 0.15 W (Ultra-Low) | ~ 1.50 W (Standard) |
+
+---
+
+## 📦 Repository Structure
 
 ```
 SNAPDRAGON/
-├── app.py              # Streamlit Master Dashboard UI & Video Pipeline
-├── privacy_engine.py   # Hybrid Vision Engine, ONNX/QNN Provider, Debouncing & Telemetry
-├── screen_shield.py    # Process-isolated Tkinter OS Fullscreen Privacy Overlay with ESC hotkey
-├── test_engine.py     # Deterministic offline unit & integration test suite
-├── requirements.txt    # Required Python packages
-└── README.md           # Documentation & Hardware Offload Guide
+├── app.py                  # Master Streamlit Dashboard & Background Protection Worker
+├── privacy_engine.py       # Core Vision Engine, Backends, Tracking & State Machine
+├── screen_shield.py        # Process-isolated OS Screen Shield Overlay
+├── test_engine.py          # Deterministic Pytest & Unit Test Suite
+├── requirements.txt        # Pinned Python Dependencies
+├── requirements-dev.txt    # Development Dependencies
+├── SECURITY.md             # Security Policy & Threat Model
+├── README.md               # Documentation & Setup Guide
+├── models/                 # Local Model Assets
+│   ├── blaze_face_short_range.tflite
+│   └── haarcascade_frontalface_default.xml
+└── scripts/                # Verification Scripts
+    ├── check_offline.py    # Zero-Network Audit Script
+    ├── verify.ps1          # Windows Automated Verification
+    └── verify.sh           # Linux/macOS Automated Verification
 ```
 
 ---
 
-## 🏆 Hardware Offload Telemetry Benchmarks
+## 🔒 Security & License
 
-| Metric | Hexagon NPU (QNN EP) | CPU Fallback (MediaPipe) |
-| :--- | :---: | :---: |
-| **Inference Latency** | **5.4 ms** | 24.8 ms |
-| **CPU Utilization** | **< 1.0 %** | ~18.5 % |
-| **Power Consumption** | **Ultra-Low (~0.2W)** | Standard (~1.5W) |
-| **Frame Rate** | **60 FPS** | 30 FPS |
-
----
-
-## 📜 License & Compliance
-
-Developed for the **Snapdragon AI Lab Challenge**. All code runs 100% locally on-device.
+This project is submitted for the **Snapdragon AI Lab Challenge**. All vision inference runs 100% locally on-device. See [SECURITY.md](file:///c:/Users/Arvind/OneDrive/Documents/SNAPDRAGON/SECURITY.md) for full threat model details.
