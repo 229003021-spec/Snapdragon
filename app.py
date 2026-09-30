@@ -799,3 +799,10 @@ if incidents:
     )
 else:
     st.info("No privacy breach incidents recorded during this session.")
+
+# ------------------------------------------------------------------------------
+# 6. Real-Time Live Stream Auto-Refresh Loop
+# ------------------------------------------------------------------------------
+if worker.state.is_running and not freeze_frame:
+    time.sleep(0.08)
+    st.rerun()

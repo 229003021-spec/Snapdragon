@@ -53,11 +53,11 @@ COLOR_WHITE = (255, 255, 255)
 COLOR_DARK_TEXT = (20, 20, 20)
 
 # Default Engine Parameter Constants
-DEFAULT_MIN_CONFIDENCE = 0.6
-DEFAULT_MIN_FACE_AREA_RATIO = 0.01
+DEFAULT_MIN_CONFIDENCE = 0.4
+DEFAULT_MIN_FACE_AREA_RATIO = 0.005
 DEFAULT_DEBOUNCE_FRAMES = 3
 DEFAULT_RELEASE_DELAY_FRAMES = 10
-DEFAULT_MODEL_SELECTION = 1  # Full-range face detection model (up to 5 meters)
+DEFAULT_MODEL_SELECTION = 0  # Short-range camera model (optimized for laptop webcams within 2 meters)
 
 
 class PrivacyStatus(Enum):
