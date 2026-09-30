@@ -206,7 +206,27 @@ class PrivacyGuardEngine:
         logger.info(f"PrivacyGuardEngine initialized successfully on {self.backend_name}.")
 
     def _init_detector(self) -> None:
-        """Safely initializes MediaPipe or fallback face detector."""
+        """Safely initializes MediaPipe Tasks, MediaPipe legacy, or OpenCV Cascade face detector."""
+        self._is_tasks = False
+
+        # 1. Try MediaPipe Tasks API with local TFLite model
+        try:
+            from mediapipe.tasks import python as mp_python
+            tflite_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "blaze_face_short_range.tflite")
+            if os.path.exists(tflite_path):
+                options = mp_python.vision.FaceDetectorOptions(
+                    base_options=mp_python.BaseOptions(model_asset_path=tflite_path),
+                    min_detection_confidence=self.min_detection_confidence,
+                )
+                self._detector = mp_python.vision.FaceDetector.create_from_options(options)
+                self.backend_name = "MediaPipe Tasks (CPU)"
+                self._is_tasks = True
+                logger.info("MediaPipe Tasks FaceDetector initialized successfully.")
+                return
+        except Exception as e:
+            logger.warning(f"Could not initialize MediaPipe Tasks FaceDetector: {e}")
+
+        # 2. Try MediaPipe Legacy Solutions API
         if mp_face_detection is not None:
             try:
                 self._detector = mp_face_detection.FaceDetection(
@@ -218,15 +238,19 @@ class PrivacyGuardEngine:
             except Exception as e:
                 logger.warning(f"Could not initialize MediaPipe FaceDetection: {e}")
 
-        # Fallback to OpenCV Cascade Classifier or Haar Cascade
-        cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        # 3. Fallback to OpenCV Cascade Classifier with local XML
+        cascade_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "haarcascade_frontalface_default.xml")
+        if not os.path.exists(cascade_path):
+            cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
         if os.path.exists(cascade_path):
             try:
                 self._detector = cv2.CascadeClassifier(cascade_path)
-                self.backend_name = "OpenCV Cascade (CPU Fallback)"
-                return
-            except Exception:
-                pass
+                if not self._detector.empty():
+                    self.backend_name = "OpenCV Cascade (CPU Fallback)"
+                    logger.info("OpenCV Cascade Classifier initialized successfully.")
+                    return
+            except Exception as e:
+                logger.warning(f"Could not initialize OpenCV Cascade: {e}")
 
         self.backend_name = "MediaPipe (CPU)"
 
@@ -276,43 +300,69 @@ class PrivacyGuardEngine:
         frame_area = w * h
         raw_boxes: List[FaceBox] = []
 
-        # Run MediaPipe face detection or Cascade fallback
-        if hasattr(self._detector, "process"):
-            results = self._detector.process(rgb_frame)
-            if not results or not results.detections:
-                return []
+        # 1. MediaPipe Tasks API Execution
+        if hasattr(self._detector, "detect") and getattr(self, "_is_tasks", False):
+            import mediapipe as mp
+            mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+            detection_result = self._detector.detect(mp_img)
+            if detection_result and detection_result.detections:
+                for detection in detection_result.detections:
+                    score = float(detection.categories[0].score) if detection.categories else 0.8
+                    if score < self.min_detection_confidence:
+                        continue
+                    bbox = detection.bounding_box
+                    pixel_x = int(np.clip(bbox.origin_x, 0, w - 1))
+                    pixel_y = int(np.clip(bbox.origin_y, 0, h - 1))
+                    pixel_w = int(np.clip(bbox.width, 1, w - pixel_x))
+                    pixel_h = int(np.clip(bbox.height, 1, h - pixel_y))
 
-            for detection in results.detections:
-                score = float(detection.score[0])
-                if score < self.min_detection_confidence:
-                    continue
+                    if (pixel_w * pixel_h) / float(frame_area) < self.min_face_area_ratio:
+                        continue
 
-                bbox = detection.location_data.relative_bounding_box
-                rel_w, rel_h = bbox.width, bbox.height
-
-                # Filter out tiny background faces, wall posters, or distant objects
-                if (rel_w * rel_h) < self.min_face_area_ratio:
-                    continue
-
-                # Convert relative coordinates to clamped pixel coordinates
-                pixel_x = int(np.clip(bbox.xmin * w, 0, w - 1))
-                pixel_y = int(np.clip(bbox.ymin * h, 0, h - 1))
-                pixel_w = int(np.clip(rel_w * w, 1, w - pixel_x))
-                pixel_h = int(np.clip(rel_h * h, 1, h - pixel_y))
-
-                raw_boxes.append(
-                    FaceBox(
-                        x=pixel_x,
-                        y=pixel_y,
-                        w=pixel_w,
-                        h=pixel_h,
-                        confidence=score,
-                        is_primary=False,
+                    raw_boxes.append(
+                        FaceBox(
+                            x=pixel_x,
+                            y=pixel_y,
+                            w=pixel_w,
+                            h=pixel_h,
+                            confidence=score,
+                            is_primary=False,
+                        )
                     )
-                )
+        # 2. MediaPipe Legacy Solutions Execution
+        elif hasattr(self._detector, "process"):
+            results = self._detector.process(rgb_frame)
+            if results and results.detections:
+                for detection in results.detections:
+                    score = float(detection.score[0])
+                    if score < self.min_detection_confidence:
+                        continue
+
+                    bbox = detection.location_data.relative_bounding_box
+                    rel_w, rel_h = bbox.width, bbox.height
+
+                    if (rel_w * rel_h) < self.min_face_area_ratio:
+                        continue
+
+                    pixel_x = int(np.clip(bbox.xmin * w, 0, w - 1))
+                    pixel_y = int(np.clip(bbox.ymin * h, 0, h - 1))
+                    pixel_w = int(np.clip(rel_w * w, 1, w - pixel_x))
+                    pixel_h = int(np.clip(rel_h * h, 1, h - pixel_y))
+
+                    raw_boxes.append(
+                        FaceBox(
+                            x=pixel_x,
+                            y=pixel_y,
+                            w=pixel_w,
+                            h=pixel_h,
+                            confidence=score,
+                            is_primary=False,
+                        )
+                    )
+        # 3. OpenCV Cascade Classifier Execution
         elif isinstance(self._detector, cv2.CascadeClassifier):
             gray = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2GRAY)
-            detected = self._detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5)
+            detected = self._detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=3, minSize=(30, 30))
             for (fx, fy, fw, fh) in detected:
                 if (fw * fh) / float(frame_area) < self.min_face_area_ratio:
                     continue
