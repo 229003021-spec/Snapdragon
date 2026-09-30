@@ -343,6 +343,9 @@ class ProtectionWorker:
                             cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
                         else:
                             cap = cv2.VideoCapture(self.camera_index)
+                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+                        cap.set(cv2.CAP_PROP_FPS, 60)
                         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
                     if cap.isOpened():
@@ -471,7 +474,7 @@ class ProtectionWorker:
                             self.state.history_cpu.pop(0)
                             self.state.history_timestamps.pop(0)
 
-                time.sleep(0.02)
+                time.sleep(0.005)  # Fast unthrottled frame processing loop
 
         finally:
             if cap is not None and cap.isOpened():
@@ -774,5 +777,5 @@ else:
 # 6. Stream Refresh Loop
 # ------------------------------------------------------------------------------
 if worker.state.is_running and not freeze_frame:
-    time.sleep(0.08)
+    time.sleep(0.03)  # Fast UI refresh rate (~30 FPS)
     st.rerun()
