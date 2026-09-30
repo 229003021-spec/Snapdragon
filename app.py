@@ -638,10 +638,14 @@ with col_right:
     if sensor_error:
         st.markdown("""
         <div class="status-card-error">
-            ⚠️ SENSOR ERROR — Protection Paused<br>
-            <span style="font-size: 0.9rem; font-weight: 400; opacity: 0.9;">Check webcam connection or device index.</span>
+            ⚠️ SENSOR ERROR — Local Camera Unavailable<br>
+            <span style="font-size: 0.9rem; font-weight: 400; opacity: 0.9;">No physical webcam attached to remote server container (Cloud Hosting Mode).</span>
         </div>
         """, unsafe_allow_html=True)
+        st.info("💡 **Streamlit Cloud Demo**: Cloud server containers have no attached physical camera. Click below or select **'Demo Source'** in the sidebar to test privacy detection live!")
+        if st.button("🔄 Switch to Demo Source (Synthetic / Cloud Demo)", type="primary", use_container_width=True):
+            worker.use_demo_source = True
+            st.rerun()
     elif current_result is not None:
         stable_st = current_result.stable_status
 
